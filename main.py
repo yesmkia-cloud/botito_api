@@ -13,3 +13,10 @@ app = FastAPI()
 @app.get("/")
 def read_root():
     return {"message": "Hola Liliana 🌞, Bot-ito API ahora está actualizada correctamente."}
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Hola Liliana 🌞, Bot-ito API ahora está actualizada correctamente."}
