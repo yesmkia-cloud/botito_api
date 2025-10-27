@@ -64,19 +64,54 @@ def echo(payload: EchoIn, x_api_key: str | None = Header(default=None)):
 # ------------------------------------------
 # 3) SENTIMENT (POST)
 # ------------------------------------------
+# 2) SENTIMENT (POST) ------------------------------------------
+from typing import Optional
+import unicodedata, re
+
+POS = {
+    "feliz","contento","contenta","genial","excelente","maravilloso","increible",
+    "fantastico","bueno","bien","alegre","emocionado","entusiasmado","tranquilo",
+    "agradecido","mejor","exito","logre","logrado"
+}
+NEG = {
+    "enojado","enojada","enoja","enojar","molesto","molesta","triste","furioso",
+    "furiosa","frustrado","frustrada","estresado","estresada","mal","horrible",
+    "terrible","miedo","ansioso","ansiosa","deprimido","deprimida","fatal","odio",
+    "enfado","rabia","cansado","cansada","dolor","preocupado","preocupada","estres"
+}
+
+def _normalize_es(text: str) -> str:
+    t = unicodedata.normalize("NFKD", text).encode("ascii","ignore").decode("ascii")
+    t = t.lower()
+    # deja solo letras y espacios
+    t = re.sub(r"[^a-z\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 @app.post("/sentiment")
-def sentiment(payload: EchoIn, x_api_key: str | None = Header(default=None)):
+def sentiment(payload: EchoIn, x_api_key: Optional[str] = Header(default=None)):
     check_key(x_api_key)
-    register_usage(x_api_key)
-    text = payload.text.lower()
-    positive = ["feliz", "excelente", "bien", "contento", "genial"]
-    negative = ["mal", "triste", "horrible", "enojado", "terrible"]
-    score = "neutral"
-    if any(p in text for p in positive):
-        score = "positivo"
-    elif any(n in text for n in negative):
-        score = "negativo"
-    return {"sentimiento": score}
+
+    t = _normalize_es(payload.text)
+    tokens = t.split()
+
+    pos = sum(1 for w in tokens if w in POS)
+    neg = sum(1 for w in tokens if w in NEG)
+
+    # Intensificadores sencillos
+    if "muy" in tokens:
+        if any(w in NEG for w in tokens): neg += 1
+        if any(w in POS for w in tokens): pos += 1
+
+    if neg > pos:
+        s = "negativo"
+    elif pos > neg:
+        s = "positivo"
+    else:
+        s = "neutral"
+
+    return {"sentimiento": s, "pos": pos, "neg": neg}
+
 
 # ------------------------------------------
 # 4) SLUG (POST)
