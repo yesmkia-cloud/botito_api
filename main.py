@@ -37,126 +37,129 @@ def register_usage(x_api_key: str):
 # =========================
 # Utilidades de texto
 # =========================
-EMOJI_POS = {"😀","😄","😁","😊","🙂","😍","🥰","🤩","👍","✨","💖","😎"}
-EMOJI_NEG = {"😠","😡","🤬","😞","😢","😭","😰","😨","👎","💔","😫","😩","🤢"}
+# ========= Sentiment v0.5 (ES) =========
+import unicodedata, re, math
+from typing import Optional
+from fastapi import Header
 
-INTENSIFICADORES = {"muy","super","súper","re","mega","ultra","demasiado","tan"}
-ATENUADORES = {"poco","apenas","algo","ligeramente"}
-NEGADORES = {"no","nunca","jamas","jamás","sin"}
+# --- utilidades ---
+def _normalize(text: str) -> str:
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9#\+\-\_\s]", "", t.lower())
 
-# Diccionarios (puedes seguir ampliando)
-ALEGRIA = {
-    "feliz","contento","contenta","alegre","entusiasmado","entusiasmada","emocionado","emocionada",
-    "bien","genial","excelente","maravilloso","fantastico","fantástica","fantástico","increible",
-    "agradecido","agradecida","satisfecho","satisfecha","optimista","motivado","motivada"
+def _tokens(text: str) -> list[str]:
+    # separa por espacios y signos -_+#
+    return [t for t in re.split(r"[\s\-\_]+", text) if t]
+
+def _tanh(x: float) -> float:
+    # normaliza soft entre -1..1
+    return math.tanh(x)
+
+def _color_from_score(s: float) -> str:
+    # verde positivo, ámbar neutro, rojo negativo
+    if s >  0.25: return "#00c851"
+    if s < -0.25: return "#ff4444"
+    return "#f1c40f"
+
+# --- diccionarios base (puedes ampliarlos cuando quieras) ---
+POS = {
+    "bien","excelente","feliz","felices","contento","contenta","genial","maravilloso","maravillosa",
+    "fantastico","fantastica","increible","recomendado","recomendadisimo","mejor","perfecto","perfecta",
+    "encanta","encanto","encantado","encantada","amo","love","wow","brutal","rapido","barato","agradecido","gracias"
 }
-ENOJO = {
-    "enojado","enojada","furioso","furiosa","molesto","molesta","irritado","irritada","fastidiado",
-    "fastidiada","indignado","indignada","rabia","enojo","colera","cólera","odio"
+NEG = {
+    "mal","malo","pesimo","horrible","terrible","triste","tristes","enojado","enojada","molesto","molesta",
+    "furioso","furiosa","decepcionado","decepcionada","asco","asqueroso","asquerosa","lento","tarde",
+    "cancelado","caro","fraude","estafa","error","fallo","bug","crash","odio","odiar"
 }
-TRISTEZA = {
-    "triste","deprimido","deprimida","melancolico","melancólica","decaido","decaída","apagado","apagada",
-    "desanimado","desanimada","llorando","llanto","pena","nostalgia"
+# categorías emocionales (conteos en 'detalles')
+CAT = {
+    "alegria": {"feliz","contento","contenta","encanta","encanto","genial","maravilloso","maravillosa","fantastico","fantastica","increible","amo","love","gracias","wow"},
+    "enojo":   {"enojado","enojada","molesto","molesta","furioso","furiosa","odio"},
+    "tristea": {"triste","tristes","decepcionado","decepcionada"},
+    "miedo":   {"miedo","temor","asusta","asustado","asustada"},
+    "asco":    {"asco","asqueroso","asquerosa"},
+    "sorpresa":{"sorprendido","sorprendida","wow","increible","brutal"}
 }
-MIEDO = {
-    "miedo","temor","asustado","asustada","ansioso","ansiosa","nervioso","nerviosa","preocupado","preocupada",
-    "panico","pánico","inseguro","insegura"
+# emojis (se evalúan antes de tokens)
+EMO_POS = {"😀","😄","😁","🙂","😊","😍","🥰","👍","✨","🎉","🔥"}
+EMO_NEG = {"😡","🤬","😤","😞","😢","😭","👎","💔","🤢","🤮"}
+
+INTENS = {  # intensificadores -> multiplicador
+    "muy":1.5, "super":2.0, "súper":2.0, "bastante":1.3, "recontra":2.0, "mega":1.7, "hiper":1.7
 }
-ASCO = {
-    "asco","repugnante","asqueroso","asquerosa","desagradable","me-da-asco","guacala","guácala","vomitivo","repulsivo"
-}
-SORPRESA = {
-    "sorprendido","sorprendida","impresionado","impresionada","asombrado","asombrada","wow","vaya"
-}
+NEGA = {"no","nunca","jamas","jamás","ni"}
 
-CATEGORIAS = {
-    "alegria": ALEGRIA,
-    "enojo": ENOJO,
-    "tristeza": TRISTEZA,
-    "miedo": MIEDO,
-    "asco": ASCO,
-    "sorpresa": SORPRESA,
-}
+def _apply_window_modifiers(idx: int, toks: list[str], base: float) -> float:
+    # mira 2 tokens hacia atrás para intensificadores/negaciones
+    start = max(0, idx-2)
+    window = toks[start:idx]
+    mult = 1.0
+    flip = False
+    for w in window:
+        if w in INTENS: mult *= INTENS[w]
+        if w in NEGA:  flip = not flip
+    return -base*mult if flip else base*mult
 
-def normalize_es(text: str) -> str:
-    t = unicodedata.normalize("NFKD", text).encode("ascii","ignore").decode("ascii")
-    t = t.lower()
-    t = re.sub(r"[^a-z0-9\s\!\?\.\,]+", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+def analyze_sentiment_v05(text: str) -> dict:
+    raw = text
+    # cuenta emojis rápido
+    emoji_pos = sum(1 for c in raw if c in EMO_POS)
+    emoji_neg = sum(1 for c in raw if c in EMO_NEG)
 
-def tokenize(text: str) -> List[str]:
-    return text.split()
+    s = _normalize(raw)
+    toks = _tokens(s)
 
-def emoji_score(raw: str) -> int:
-    pos = sum(1 for ch in raw if ch in EMOJI_POS)
-    neg = sum(1 for ch in raw if ch in EMOJI_NEG)
-    return pos - neg
+    score = 0.0
+    pos_hits = 0
+    neg_hits = 0
 
-def window_has(tokens: List[str], index: int, vocab: set, w: int = 2) -> bool:
-    i0 = max(0, index - w)
-    i1 = min(len(tokens), index + w + 1)
-    return any(tok in vocab for tok in tokens[i0:i1])
+    detalles = {"alegria":0,"enojo":0,"tristeza":0,"miedo":0,"asco":0,"sorpresa":0}
 
-def sentiment_analyze(raw_text: str):
-    # 1) Normaliza y tokeniza
-    norm = normalize_es(raw_text)
-    tokens = tokenize(norm)
+    # emojis pesan 1 cada uno
+    score += emoji_pos * 1.0
+    score -= emoji_neg * 1.0
 
-    # 2) Conteo por categoría
-    cat_counts = {k: 0 for k in CATEGORIAS.keys()}
-    base_score = 0
+    for i, t in enumerate(toks):
+        base = 0.0
+        if t in POS:
+            base = +1.0
+            pos_hits += 1
+        elif t in NEG:
+            base = -1.0
+            neg_hits += 1
 
-    for idx, tok in enumerate(tokens):
-        for cat, vocab in CATEGORIAS.items():
-            if tok in vocab:
-                # peso base
-                weight = 1
-                # intensificadores/atenuadores cercanos
-                if window_has(tokens, idx, INTENSIFICADORES, 2): weight += 1
-                if window_has(tokens, idx, ATENUADORES, 2):      weight -= 0.5
-                # negación cercana invierte
-                negated = window_has(tokens, idx, NEGADORES, 2)
+        if base != 0.0:
+            score += _apply_window_modifiers(i, toks, base)
 
-                # asigna signo por polaridad de la categoría
-                polarity = 0
-                if cat == "alegria":
-                    polarity = 1
-                elif cat in {"enojo","tristeza","miedo","asco"}:
-                    polarity = -1
-                elif cat == "sorpresa":
-                    polarity = 0.3  # sorpresa leve positiva por defecto
+        # conteo por categorías
+        for cat, words in CAT.items():
+            if t in words:
+                # normaliza nombre "tristea" -> "tristeza"
+                key = "tristeza" if cat == "tristea" else cat
+                detalles[key] += 1
 
-                val = polarity * weight
-                if negated:
-                    val = -val  # invierte
-
-                cat_counts[cat] += weight if polarity >= 0 else weight  # para estadística simple
-                base_score += val
-
-    # 3) Emojis (a partir del texto original, no normalizado)
-    e_score = emoji_score(raw_text)
-    base_score += e_score * 0.8  # emojis pesan, pero menos que palabras
-
-    # 4) Clamp & color
-    # score final aproximado entre -5 y +5; normalizamos a -1..+1
-    score_raw = max(-5.0, min(5.0, base_score))
-    score = round(score_raw / 5.0, 3)
-
-    if score > 0.15:
-        label, color = "positivo", "#2ecc71"   # verde
-    elif score < -0.15:
-        label, color = "negativo", "#e74c3c"   # rojo
-    else:
-        label, color = "neutral",  "#f1c40f"   # amarillo
+    # normalización suave por magnitud (evita crecer infinito)
+    norm = _tanh(score / 3.0)
+    if norm >  0.1: label = "positivo"
+    elif norm < -0.1: label = "negativo"
+    else: label = "neutral"
 
     return {
         "sentimiento": label,
-        "score": score,           # -1..+1
-        "color": color,           # hex
-        "detalles": cat_counts,   # conteo bruto por categoría
-        "tokens": tokens[:50],    # debug limitado
+        "score": round(norm, 3),
+        "color": _color_from_score(norm),
+        "detalles": detalles,
+        "tokens": toks[:100]  # por si quieres inspección rápida
     }
+
+# --- endpoint protegido ---
+@app.post("/sentiment")
+def sentiment(payload: EchoIn, x_api_key: Optional[str] = Header(default=None)):
+    check_key(x_api_key)  # tu función de seguridad existente
+    return analyze_sentiment_v05(payload.text)
+# ========= /Sentiment v0.5 =========
+
 
 # =========================
 # ENDPOINTS
